@@ -59,19 +59,3 @@ Automated evaluation pipeline for counseling LLM research using ChatGPT 4o API t
 ### Extraction Script (`extract_evaluations.py`)
 - `--file`: Extract a specific JSON result file (e.g., `llm_evaluated_response_claude_without_explanation.json`)
 - `--results-dir`: Custom results directory (default: "results")
-
-## Features
-
-### Evaluation Features
-- Process all files or target specific files independently
-- Only processes entries where `metadata.success = true`
-- Automatic error handling and retry logic
-- Progress tracking and rate limiting
-- Skips already processed files
-
-### Extraction Features
-- Converts JSON evaluation results to readable markdown format
-- Creates individual `.md` files for each model's evaluations
-- Generates a comprehensive summary with statistics
-- Includes success/failure tracking and token usage
-- Formats evaluations with context, questions, and responses
