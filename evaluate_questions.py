@@ -58,28 +58,44 @@ def call_chatgpt_api(client: OpenAI, prompt: str, max_retries: int = 3) -> Dict[
             }
             
         except Exception as e:
-            print(f"Attempt {attempt + 1} failed: {str(e)}")
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt) 
-            else:
+            error_str = str(e)
+            print(f"Attempt {attempt + 1} failed: {error_str}")
+            
+            # Handle rate limits with longer waits
+            if "rate_limit_exceeded" in error_str or "429" in error_str:
+                if attempt < max_retries - 1:
+                    wait_time = min(60, 2 ** (attempt + 2))  # Cap at 60 seconds
+                    print(f"Rate limit hit. Waiting {wait_time} seconds...")
+                    time.sleep(wait_time)
+                    continue
+            elif attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # Exponential backoff for other errors
+            
+            if attempt == max_retries - 1:
                 return {
-                    "response": f"ERROR: API call failed after {max_retries} attempts - {str(e)}",
+                    "response": f"ERROR: API call failed after {max_retries} attempts - {error_str}",
                     "model": "gpt-4o",
                     "success": False,
                     "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "error": str(e)
+                    "error": error_str
                 }
 
-def extract_model_name(filename: str) -> str:
-    """Extract model name from filename"""
-    # Remove file extension and prefix
-    name = filename.replace('.json', '').replace('llm_generated_questions_', '')
+def extract_model_name(filename: str, dataset_type: str) -> str:
+    """Extract model name from filename based on dataset type"""
+    name = filename.replace('.json', '')
     
-    # Extract model name (everything before _with_explanation or _without_explanation)
-    if '_with_explanation' in name:
-        return name.replace('_with_explanation', '')
-    elif '_without_explanation' in name:
-        return name.replace('_without_explanation', '')
+    if dataset_type == '500_4_Models':
+        # Original format: llm_generated_questions_{model}_{variant}.json
+        name = name.replace('llm_generated_questions_', '')
+        if '_with_explanation' in name:
+            return name.replace('_with_explanation', '')
+        elif '_without_explanation' in name:
+            return name.replace('_without_explanation', '')
+        else:
+            return name
+    elif dataset_type == '100_4_Models_5_Times':
+        # Trial format: {model}_{trial}.json
+        return name  # Keep the full name including trial info
     else:
         return name
 
@@ -98,25 +114,49 @@ def parse_question_from_generated_text(generated_question: str, has_explanation:
     # Fallback: if format is different, return the whole thing
     return generated_question.strip()
 
-def process_file(file_path: str, prompt_template: str, client: OpenAI, max_questions: int = None) -> List[Dict[str, Any]]:
-    """Process a single JSON file"""
+def process_file(file_path: str, prompt_template: str, client: OpenAI, max_questions: int = None, output_path: str = None, dataset_type: str = None) -> List[Dict[str, Any]]:
+    """Process a single JSON file with incremental saving"""
     print(f"Processing {file_path}...")
     
-    # Check if this file contains explanations
-    has_explanation = 'with_explanation' in file_path
+    # Check if this file contains explanations (only relevant for 500_4_Models dataset)
+    has_explanation = dataset_type == '500_4_Models' and 'with_explanation' in file_path
     
     # Load and filter data
     data = load_json_data(file_path)
     successful_data = filter_successful_data(data, max_questions)
     
-    print(f"Found {len(successful_data)} successful entries to process")
+    # Load existing results if output file exists
+    existing_results = []
+    processed_ids = set()
+    
+    if output_path and os.path.exists(output_path):
+        try:
+            with open(output_path, 'r', encoding='utf-8') as f:
+                existing_results = json.load(f)
+                processed_ids = {item.get('original_id') for item in existing_results}
+                print(f"Found {len(existing_results)} existing results. Will skip already processed items.")
+        except Exception as e:
+            print(f"Could not load existing results: {e}. Starting fresh.")
+            existing_results = []
+    
+    # Filter out already processed items
+    remaining_data = [item for item in successful_data if item.get('id') not in processed_ids]
+    
+    print(f"Found {len(successful_data)} successful entries total")
+    print(f"Found {len(remaining_data)} remaining entries to process")
     if has_explanation:
         print("Note: This file contains explanations - extracting questions only for evaluation")
     
-    results = []
+    if not remaining_data:
+        print("All items already processed!")
+        return existing_results
     
-    for i, item in enumerate(successful_data):
-        print(f"Processing item {i+1}/{len(successful_data)} (ID: {item.get('id', 'unknown')})")
+    # Start with existing results
+    results = existing_results.copy()
+    new_results = []
+    
+    for i, item in enumerate(remaining_data):
+        print(f"Processing item {i+1}/{len(remaining_data)} (ID: {item.get('id', 'unknown')})")
         
         # Extract conversation and question
         conversation = item['input']['context']
@@ -149,10 +189,27 @@ def process_file(file_path: str, prompt_template: str, client: OpenAI, max_quest
             }
         }
         
+        new_results.append(result)
         results.append(result)
+        
+        # Save incrementally every 20 items
+        if len(new_results) % 20 == 0 and output_path:
+            try:
+                save_results(results, output_path)
+                print(f"✅ Progress saved: {len(results)} total results ({len(new_results)} new)")
+            except Exception as e:
+                print(f"❌ Could not save progress: {e}")
         
         # Small delay to avoid rate limiting
         time.sleep(0.5)
+    
+    # Final save if output_path is provided
+    if output_path:
+        try:
+            save_results(results, output_path)
+            print(f"✅ Final save: {len(results)} total results")
+        except Exception as e:
+            print(f"❌ Could not save final results: {e}")
     
     return results
 
@@ -170,7 +227,9 @@ def main():
     load_dotenv()
     
     parser = argparse.ArgumentParser(description='Evaluate counseling questions using ChatGPT 4o')
-    parser.add_argument('--file', type=str, help='Process a specific JSON file (e.g., llm_generated_questions_claude_without_explanation.json)')
+    parser.add_argument('--file', type=str, help='Process a specific JSON file')
+    parser.add_argument('--dataset', choices=['500_4_Models', '100_4_Models_5_Times'], default='500_4_Models', 
+                       help='Choose dataset: 500_4_Models (original with/without explanation) or 100_4_Models_5_Times (trial runs)')
     parser.add_argument('--max-questions', type=int, help='Maximum number of questions to process per file (e.g., 100)')
     parser.add_argument('--data-dir', default='data', help='Directory containing JSON files')
     parser.add_argument('--results-dir', default='results', help='Directory to save results')
@@ -191,7 +250,7 @@ def main():
     prompt_template = load_prompt_template()
     
     # Determine which files to process
-    data_dir = Path(args.data_dir)
+    data_dir = Path(args.data_dir) / args.dataset
     
     if args.file:
         # Process specific file
@@ -200,45 +259,48 @@ def main():
             print(f"Error: File {json_file_path} does not exist")
             return
         json_files = [json_file_path]
-        print(f"Processing specific file: {args.file}")
+        print(f"Processing specific file: {args.file} from dataset: {args.dataset}")
     else:
         # Process all JSON files in data directory
         json_files = list(data_dir.glob('*.json'))
         if not json_files:
             print(f"No JSON files found in {data_dir}")
             return
-        print(f"Found {len(json_files)} JSON files to process")
+        print(f"Found {len(json_files)} JSON files to process from dataset: {args.dataset}")
     
     if args.max_questions:
         print(f"Will process maximum {args.max_questions} questions per file")
     
     # Process each file
     for json_file in json_files:
-        model_name = extract_model_name(json_file.name)
+        model_name = extract_model_name(json_file.name, args.dataset)
         
-        # Determine if this is a "without_explanation" file for naming
-        if 'without_explanation' in json_file.name:
-            output_filename = f"llm_evaluated_response_{model_name}_without_explanation.json"
+        # Determine output filename based on dataset type
+        if args.dataset == '500_4_Models':
+            # Original format with explanation variants
+            if 'without_explanation' in json_file.name:
+                output_filename = f"llm_evaluated_response_{model_name}_without_explanation.json"
+            else:
+                output_filename = f"llm_evaluated_response_{model_name}_with_explanation.json"
         else:
-            output_filename = f"llm_evaluated_response_{model_name}_with_explanation.json"
+            # Trial format
+            output_filename = f"llm_evaluated_response_{model_name}.json"
         
-        output_path = Path(args.results_dir) / output_filename
+        output_path = Path(args.results_dir) / args.dataset / output_filename
         
-        # Skip if output file already exists
-        if output_path.exists():
-            print(f"Output file {output_path} already exists. Skipping...")
-            continue
+        # Create output subdirectory if it doesn't exist
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         
         try:
-            # Process the file
-            results = process_file(str(json_file), prompt_template, client, args.max_questions)
-            
-            # Save results
-            save_results(results, str(output_path))
+            # Process the file with incremental saving (will resume if output already exists)
+            results = process_file(str(json_file), prompt_template, client, args.max_questions, str(output_path), args.dataset)
             
             print(f"Successfully processed {json_file.name}")
             print("-" * 50)
             
+        except KeyboardInterrupt:
+            print(f"\nInterrupted by user. Partial results may be saved.")
+            break
         except Exception as e:
             print(f"Error processing {json_file.name}: {str(e)}")
             continue
