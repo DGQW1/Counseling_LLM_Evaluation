@@ -28,11 +28,15 @@ def load_evaluation_results(results_dir: Path) -> List[Dict[str, Any]]:
     all_results = []
     for json_file in json_files:
         try:
+            # Skip 100_4_Models_5_Times dataset for now
+            if '100_4_Models_5_Times' in str(json_file):
+                continue
+                
             with open(json_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 
                 # Determine dataset type from file path
-                dataset_type = '500_4_Models' if '500_4_Models' in str(json_file) else '100_4_Models_5_Times' if '100_4_Models_5_Times' in str(json_file) else 'legacy'
+                dataset_type = '500_4_Models' if '500_4_Models' in str(json_file) else 'human' if 'human' in str(json_file) else 'legacy'
                 
                 for item in data:
                     item['source_model'] = extract_model_from_filename(json_file.name, dataset_type)
@@ -58,6 +62,9 @@ def extract_model_from_filename(filename: str, dataset_type: str) -> str:
     elif dataset_type == '100_4_Models_5_Times':
         # Trial format: llm_evaluated_response_{model}_{trial}.json
         return name  # Keep the full name including trial info
+    elif dataset_type == 'human':
+        # Human format: llm_evaluated_response_human.json
+        return name
     else:
         # Legacy format
         if '_with_explanation' in name:
@@ -167,7 +174,8 @@ def create_analysis_dataframe(results: List[Dict[str, Any]]) -> pd.DataFrame:
             'depth_categories': ', '.join(parsed['depth_categories']),
             'num_format_categories': len(parsed['format_categories']),
             'num_purpose_categories': len(parsed['purpose_categories']),
-            'num_depth_categories': len(parsed['depth_categories'])
+            'num_depth_categories': len(parsed['depth_categories']),
+            'dataset_type': item.get('dataset_type', 'legacy')  # Add dataset_type with fallback
         }
         
         rows.append(row)
@@ -198,10 +206,16 @@ def create_visualizations(df: pd.DataFrame, output_dir: Path):
     
     for i, (col, label) in enumerate(zip(rating_cols, rating_labels)):
         ax = axes[i]
-        for model in df['model'].unique():
+        for model in sorted(df['model'].unique()):
             model_data = df[df['model'] == model][col].dropna()
             if len(model_data) > 0:
-                ax.hist(model_data, alpha=0.6, label=f'{model} (n={len(model_data)})', bins=[0.5, 1.5, 2.5, 3.5, 4.5, 5.5])
+                # Highlight human data with different color and style
+                if 'human' in model.lower():
+                    ax.hist(model_data, alpha=0.8, label=f'{model} (n={len(model_data)})', 
+                           bins=[0.5, 1.5, 2.5, 3.5, 4.5, 5.5], color='red', edgecolor='black', linewidth=1.5)
+                else:
+                    ax.hist(model_data, alpha=0.6, label=f'{model} (n={len(model_data)})', 
+                           bins=[0.5, 1.5, 2.5, 3.5, 4.5, 5.5])
         
         ax.set_xlabel('Rating (1-5)')
         ax.set_ylabel('Frequency')
@@ -238,12 +252,21 @@ def create_visualizations(df: pd.DataFrame, output_dir: Path):
                 print(f"Skipping {model} for {label} (not enough data)")
         
         if data_to_plot:
-            ax.boxplot(data_to_plot, labels=labels_to_plot, showmeans=True)
+            # Create boxplot with custom colors for human data
+            box_colors = ['red' if 'human' in label.lower() else 'lightblue' for label in labels_to_plot]
+            bp = ax.boxplot(data_to_plot, labels=labels_to_plot, showmeans=True, patch_artist=True)
+            
+            # Apply colors to boxes
+            for patch, color in zip(bp['boxes'], box_colors):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.7)
+            
             # Overlay data points for clarity
             for j, points in enumerate(all_points):
                 y = points.values
                 x = np.random.normal(j+1, 0.04, size=len(y))  # jitter
-                ax.plot(x, y, 'o', alpha=0.4, markersize=5)
+                point_color = 'red' if 'human' in labels_to_plot[j].lower() else 'blue'
+                ax.plot(x, y, 'o', alpha=0.4, markersize=5, color=point_color)
             ax.set_ylabel('Rating (1-5)')
             ax.set_title(f'{label} Ratings Comparison')
             ax.grid(True, alpha=0.3)
@@ -264,6 +287,10 @@ def create_visualizations(df: pd.DataFrame, output_dir: Path):
     
     # Ensure all values are numeric and handle any remaining NaN values
     rating_means = rating_means.astype(float)
+    
+    # Sort models to put human first if present
+    model_order = sorted(rating_means.index, key=lambda x: (0 if 'human' in x.lower() else 1, x))
+    rating_means = rating_means.reindex(model_order)
     
     plt.figure(figsize=(10, 6))
     sns.heatmap(rating_means.T, annot=True, cmap='RdYlBu_r', center=3, 
@@ -306,8 +333,11 @@ def create_visualizations(df: pd.DataFrame, output_dir: Path):
     plt.savefig(output_dir / 'category_distributions_overall.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 5. Category distribution by model
-    models = sorted(df['model'].unique())
+    # 5. Category distribution by model (Only Without Explanation)
+    # Filter to only include without explanation data for category distribution by model
+    df_no_explanation = df[~df['has_explanation']]
+    
+    models = sorted(df_no_explanation['model'].unique())
     fig, axes = plt.subplots(3, len(models), figsize=(6*len(models), 15))
     
     if len(models) == 1:
@@ -319,7 +349,7 @@ def create_visualizations(df: pd.DataFrame, output_dir: Path):
     for row, (cat_type, cat_label) in enumerate(zip(category_types, category_labels)):
         for col, model in enumerate(models):
             ax = axes[row, col]
-            model_data = df[df['model'] == model]
+            model_data = df_no_explanation[df_no_explanation['model'] == model]
             
             if len(model_data) > 0:
                 cat_counts = model_data[cat_type].value_counts().head(8)
@@ -517,6 +547,25 @@ def generate_summary_statistics(df: pd.DataFrame, output_dir: Path):
 **With Explanations:** {len(df[df['has_explanation']])}  
 **Without Explanations:** {len(df[~df['has_explanation']])}
 
+### Dataset Breakdown
+"""
+    
+    # Add dataset breakdown (handle missing dataset_type field)
+    if 'dataset_type' in df.columns:
+        dataset_counts = df['dataset_type'].value_counts()
+        for dataset, count in dataset_counts.items():
+            content += f"- **{dataset}:** {count} evaluations\n"
+    else:
+        # Fallback for older data without dataset_type
+        content += "- **Legacy Data:** All evaluations\n"
+    
+    # Highlight human data if present
+    human_data = df[df['model'].str.contains('human', case=False, na=False)]
+    if len(human_data) > 0:
+        content += f"\n**Human-Generated Questions:** {len(human_data)} evaluations\n"
+    
+    content += """
+
 ## Rating Statistics
 
 ### Overall Statistics
@@ -535,17 +584,24 @@ def generate_summary_statistics(df: pd.DataFrame, output_dir: Path):
     content += "\n### Model Comparison\n"
     model_stats = df.groupby('model')[rating_cols].agg(['mean', 'std', 'count'])
     
+    # Sort models to put human first if present
+    models_sorted = sorted(df['model'].unique(), key=lambda x: (0 if 'human' in x.lower() else 1, x))
+    
     for col, label in zip(rating_cols, rating_labels):
         content += f"\n#### {label}\n"
         content += "| Model | Mean | Std | Count |\n"
         content += "|-------|------|-----|-------|\n"
         
-        for model in sorted(df['model'].unique()):
+        for model in models_sorted:
             if model in model_stats.index:
                 mean_val = model_stats.loc[model, (col, 'mean')]
                 std_val = model_stats.loc[model, (col, 'std')]
                 count_val = model_stats.loc[model, (col, 'count')]
-                content += f"| {model} | {mean_val:.2f} | {std_val:.2f} | {count_val} |\n"
+                # Highlight human data with bold formatting
+                if 'human' in model.lower():
+                    content += f"| **{model}** | **{mean_val:.2f}** | **{std_val:.2f}** | **{count_val}** |\n"
+                else:
+                    content += f"| {model} | {mean_val:.2f} | {std_val:.2f} | {count_val} |\n"
     
     # Category analysis - Overall
     content += "\n## Category Analysis\n"
@@ -576,10 +632,49 @@ def generate_summary_statistics(df: pd.DataFrame, output_dir: Path):
         pct = (count / len(df)) * 100
         content += f"| {cat} | {count} | {pct:.1f}% |\n"
     
+    # Human vs LLM comparison (if human data is present)
+    human_data = df[df['model'].str.contains('human', case=False, na=False)]
+    llm_data = df[~df['model'].str.contains('human', case=False, na=False)]
+    
+    if len(human_data) > 0 and len(llm_data) > 0:
+        content += "\n## Human vs LLM Performance Comparison\n"
+        
+        # Compare average ratings
+        human_means = human_data[rating_cols].mean()
+        llm_means = llm_data[rating_cols].mean()
+        
+        content += "\n### Average Rating Comparison\n"
+        content += "| Metric | Human | LLMs | Difference (Human - LLM) |\n"
+        content += "|--------|-------|------|------------------------|\n"
+        
+        for col, label in zip(rating_cols, rating_labels):
+            human_val = human_means[col]
+            llm_val = llm_means[col]
+            diff = human_val - llm_val
+            content += f"| {label} | {human_val:.2f} | {llm_val:.2f} | {diff:+.2f} |\n"
+        
+        # Compare category distributions
+        content += "\n### Category Distribution Comparison\n"
+        for cat_type, cat_label in zip(['format_categories', 'purpose_categories', 'depth_categories'], 
+                                      ['Format', 'Purpose', 'Depth']):
+            human_cats = human_data[cat_type].value_counts().head(5)
+            llm_cats = llm_data[cat_type].value_counts().head(5)
+            
+            content += f"\n#### {cat_label} Categories\n"
+            content += "| Category | Human % | LLM % | Difference |\n"
+            content += "|----------|---------|-------|-----------|\n"
+            
+            all_cats = set(human_cats.index) | set(llm_cats.index)
+            for cat in sorted(all_cats):
+                human_pct = (human_cats.get(cat, 0) / len(human_data)) * 100
+                llm_pct = (llm_cats.get(cat, 0) / len(llm_data)) * 100
+                diff = human_pct - llm_pct
+                content += f"| {cat} | {human_pct:.1f}% | {llm_pct:.1f}% | {diff:+.1f}% |\n"
+    
     # Model-specific category analysis
     content += f"\n### Category Analysis by Model\n"
     
-    models = sorted(df['model'].unique())
+    models = sorted(df['model'].unique(), key=lambda x: (0 if 'human' in x.lower() else 1, x))
     category_types = ['format_categories', 'purpose_categories', 'depth_categories']
     category_labels = ['Format Categories', 'Purpose Categories', 'Depth Categories']
     

@@ -28,6 +28,9 @@ Automated evaluation pipeline for counseling LLM research using ChatGPT 4o API t
    # Process all files from 100_4_Models_5_Times dataset (trial runs)
    python evaluate_questions.py --dataset 100_4_Models_5_Times
 
+   # Process all files from human dataset
+   python evaluate_questions.py --dataset human
+
    # Process only first 100 questions per file
    python evaluate_questions.py --max-questions 100
 
@@ -36,6 +39,9 @@ Automated evaluation pipeline for counseling LLM research using ChatGPT 4o API t
 
    # Process a specific trial file from 100_4_Models_5_Times dataset
    python evaluate_questions.py --dataset 100_4_Models_5_Times --file claude_first_trial.json
+
+   # Process the human dataset file
+   python evaluate_questions.py --dataset human --file llm_generated_questions_human.json
    ```
 
 4. **Extract evaluations to markdown** (after running evaluations)
@@ -68,7 +74,7 @@ Automated evaluation pipeline for counseling LLM research using ChatGPT 4o API t
 ## Options
 
 ### Evaluation Script (`evaluate_questions.py`)
-- `--dataset`: Choose dataset type: `500_4_Models` (default) or `100_4_Models_5_Times` (trial runs)
+- `--dataset`: Choose dataset type: `500_4_Models` (default), `100_4_Models_5_Times` (trial runs), or `human`
 - `--file`: Process a specific JSON file independently
 - `--max-questions`: Limit questions per file (e.g., 100)
 - `--data-dir`: Custom data directory (default: "data")
@@ -81,6 +87,11 @@ Automated evaluation pipeline for counseling LLM research using ChatGPT 4o API t
 ### Analysis Script (`analyze_evaluations.py`)
 - `--results-dir`: Directory containing evaluation results (default: "results")
 - `--output-dir`: Directory to save analysis output (default: "analysis")
+- **Enhanced Features:**
+  - Supports all dataset types (500_4_Models, 100_4_Models_5_Times, human)
+  - Highlights human performance with special formatting and colors
+  - Includes Human vs LLM comparison tables
+  - Sorts models to prioritize human data in visualizations
 
 ## Features
 

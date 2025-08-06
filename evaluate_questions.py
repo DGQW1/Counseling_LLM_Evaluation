@@ -228,8 +228,8 @@ def main():
     
     parser = argparse.ArgumentParser(description='Evaluate counseling questions using ChatGPT 4o')
     parser.add_argument('--file', type=str, help='Process a specific JSON file')
-    parser.add_argument('--dataset', choices=['500_4_Models', '100_4_Models_5_Times'], default='500_4_Models', 
-                       help='Choose dataset: 500_4_Models (original with/without explanation) or 100_4_Models_5_Times (trial runs)')
+    parser.add_argument('--dataset', choices=['500_4_Models', '100_4_Models_5_Times', 'human'], default='500_4_Models', 
+                       help='Choose dataset: 500_4_Models (original with/without explanation), 100_4_Models_5_Times (trial runs), or human')
     parser.add_argument('--max-questions', type=int, help='Maximum number of questions to process per file (e.g., 100)')
     parser.add_argument('--data-dir', default='data', help='Directory containing JSON files')
     parser.add_argument('--results-dir', default='results', help='Directory to save results')
